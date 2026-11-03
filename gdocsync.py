@@ -278,7 +278,9 @@ class Links:
         name = path or self.name
         if name in self.repo.map:
             h = self.headings(name).get(anchor) if anchor else None
-            return f'https://docs.google.com/document/d/{self.repo.map[name]}/edit' + (f'#heading={h}' if h else '')
+            # A section the Google Doc does not have yet (it lags its Markdown) is linked on GitHub.
+            if h or not anchor:
+                return f'https://docs.google.com/document/d/{self.repo.map[name]}/edit' + (f'#heading={h}' if h else '')
         return (self.repo.github or '') + name + (f'#{anchor}' if anchor else '')
 
 

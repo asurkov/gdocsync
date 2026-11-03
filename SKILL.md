@@ -29,8 +29,8 @@ project's own instructions say which repo it syncs and with what care.
    rewrites only the ones whose text differs, bottom up. Comments anchored in unchanged paragraphs keep
    their anchors; the summary line counts open comments anchored in text that goes.
 3. Restyles every paragraph (bold, italic, code in Consolas) and sets every link: a link to another
-   mapped Markdown file goes to that file's Google Doc, at the heading its anchor names (`#heading=h.…`);
-   other relative links go to GitHub; `TBD …` text stays text. Restyling keeps text, so comments stay.
+   mapped Markdown file goes to that file's Google Doc, at the heading its anchor names (`#heading=h.…`),
+   or to the section on GitHub while that Google Doc lacks the heading; other relative links go to GitHub; `TBD …` text stays text. Restyling keeps text, so comments stay.
 4. Saves the new snapshot.
 
 Headings map `#` → Heading 1, `##` → Heading 2, `###` → Heading 3; `---` rules are dropped, as in the
