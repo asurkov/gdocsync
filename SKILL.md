@@ -17,7 +17,8 @@ python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> create <file.md> 
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> map <file.md> <document id>
 ```
 
-For the WM design docs the repo is `~/projects/webmonetization/wm-design-docs`; its five docs are mapped.
+Which Google Doc belongs to which file is per repo and per machine (`~/.gdocsync/<repo>/map.json`); a
+project's own instructions say which repo it syncs and with what care.
 
 ## What a push does
 
