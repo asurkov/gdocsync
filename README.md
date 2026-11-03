@@ -1,7 +1,7 @@
 # gdocsync
 
-Keeps Google Docs in step with a git repo's Markdown docs. The Markdown is the source; a push rewrites
-only the paragraphs that changed, so comments on the rest of the Google Doc keep their anchors, and links
+Keeps Google Docs in step with a git repo's Markdown docs. The Markdown is the source; a push edits
+only the words that changed, so a comment in the Google Doc keeps its anchor unless its own words change, and links
 between docs point to each other's Google Docs. It is a [Claude Code](https://claude.com/claude-code)
 skill (`/gdocsync`), and `gdocsync.py` also runs on its own. [SKILL.md](SKILL.md) says how it behaves.
 
@@ -54,6 +54,7 @@ G=~/.claude/skills/gdocsync/gdocsync.py
 python3 -I $G --repo <repo> map <file.md> <document id>   # a Google Doc that already exists
 python3 -I $G --repo <repo> create <file.md>               # a new, private Google Doc
 python3 -I $G --repo <repo> status
+python3 -I $G --repo <repo> export                         # Google Docs vs Markdown, for a diff tool
 ```
 
 The document id is the part of the Google Doc's URL between `/d/` and `/edit`.

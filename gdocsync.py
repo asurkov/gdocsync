@@ -5,9 +5,11 @@ Usage: gdocsync.py [--repo PATH] status
        gdocsync.py [--repo PATH] push FILE [--dry-run] [--force]
        gdocsync.py [--repo PATH] create FILE [--title TITLE]
        gdocsync.py [--repo PATH] map FILE DOC_ID
+       gdocsync.py [--repo PATH] export [FILE...] [--to DIR]
 
-Markdown is the source; the Google Doc follows it. A push rewrites only the paragraphs whose text
-changed, bottom up, so comments on the rest keep their anchors; then it restyles every paragraph and
+Markdown is the source; the Google Doc follows it. A push edits changed paragraphs word by word, and
+inserts or deletes whole only the blocks added or removed, bottom up, so a comment keeps its anchor
+unless its own words change; then it restyles every paragraph and
 sets every link. A link to another mapped Markdown file goes to that file's Google Doc, at the heading
 its anchor names; any other relative link goes to the file on GitHub.
 
@@ -17,7 +19,7 @@ since, the push lists those paragraphs and stops: merge them into the Markdown f
 State lives in ~/.gdocsync/<repo name>/: map.json (file -> document id) and snapshots/ (each Google
 Doc's paragraphs as the last push left them). Credentials are gdocs-mcp's, in ~/.gdocs-mcp.
 """
-import argparse, difflib, json, os, pathlib, re, subprocess, sys, time, urllib.error, urllib.parse
+import argparse, difflib, html, json, os, pathlib, re, subprocess, sys, time, urllib.error, urllib.parse
 import urllib.request
 
 AUTH = pathlib.Path('~/.gdocs-mcp').expanduser()
@@ -26,7 +28,9 @@ DOCS = 'https://docs.googleapis.com/v1/documents'
 DRIVE = 'https://www.googleapis.com/drive/v3/files'
 LIST_PRESET = {'ul': 'BULLET_DISC_CIRCLE_SQUARE', 'ol': 'NUMBERED_DECIMAL_ALPHA_ROMAN'}
 HEADINGS = {'h1': 'HEADING_1', 'h2': 'HEADING_2', 'h3': 'HEADING_3'}
-STYLE_FIELDS = 'bold,italic,underline,link,weightedFontFamily'
+STYLE_FIELDS = 'bold,italic,underline,link,weightedFontFamily,foregroundColor'
+LINK_STYLE = {'underline': True, 'foregroundColor': {'color': {'rgbColor': {'red': 0.067, 'green': 0.333, 'blue': 0.8}}}}
+SAME = 0.4  # share of words a paragraph keeps for it to be edited in place rather than replaced
 
 
 def u16(s):
@@ -76,9 +80,15 @@ class Google:
         return self.call(DOCS, {'title': title})['documentId']
 
     def open_comments(self, doc_id):
-        q = urllib.parse.urlencode({'fields': 'comments(resolved,quotedFileContent/value)', 'pageSize': 100})
-        return [c.get('quotedFileContent', {}).get('value', '') for c in self.call(f'{DRIVE}/{doc_id}/comments?{q}').get('comments', [])
-                if not c.get('resolved')]
+        """Unresolved comments: quote (the text they are anchored in, as it read when they were made; the API
+        gives it HTML-escaped), author, date, text, replies."""
+        fields = ('comments(resolved,quotedFileContent/value,author/displayName,createdTime,content,'
+                  'replies(author/displayName,content))')
+        q = urllib.parse.urlencode({'fields': fields, 'pageSize': 100})
+        return [{'quote': html.unescape(c.get('quotedFileContent', {}).get('value', '')), 'author': c['author']['displayName'],
+                 'date': c['createdTime'][:10], 'text': c.get('content', ''),
+                 'replies': [{'author': r['author']['displayName'], 'text': r.get('content', '')} for r in c.get('replies', [])]}
+                for c in self.call(f'{DRIVE}/{doc_id}/comments?{q}').get('comments', []) if not c.get('resolved')]
 
 
 # Markdown: the subset the design docs use.
@@ -181,8 +191,12 @@ def plain(body):
     return ''.join(t for t, _ in runs(body))
 
 
+QUOTES = str.maketrans('‘’“”', '\'\'""')
+
+
 def norm(s):
-    return ' '.join(s.split())
+    # Google Docs types curly quotes; the Markdown has straight ones.
+    return ' '.join(s.translate(QUOTES).split())
 
 
 def md_key(kind, body):
@@ -210,11 +224,15 @@ def doc_blocks(doc):
             out.append({'kind': kind, 'text': text, 'start': e['startIndex'], 'end': e['endIndex'],
                         'heading': p['paragraphStyle'].get('headingId')})
         elif 'table' in e:
-            cells = [''.join(r.get('textRun', {}).get('content', '') for c in cell['content'] if 'paragraph' in c
-                             for r in c['paragraph']['elements']).strip()
-                     for row in e['table']['tableRows'] for cell in row['tableCells']]
+            cells = [c for row in table_rows(e['table']) for c in row]
             out.append({'kind': 'table', 'text': ' | '.join(cells), 'start': e['startIndex'], 'end': e['endIndex'], 'table': e['table']})
     return out
+
+
+def table_rows(table):
+    return [[''.join(r.get('textRun', {}).get('content', '') for c in cell['content'] if 'paragraph' in c
+                     for r in c['paragraph']['elements']).strip()
+             for cell in row['tableCells']] for row in table['tableRows']]
 
 
 def doc_key(b):
@@ -328,7 +346,7 @@ def style_requests(body, start, links=None):
         if st.get('code'):
             ts['weightedFontFamily'] = {'fontFamily': 'Consolas'}
         if st.get('link') and links:
-            ts['link'] = {'url': links.url(st['link'])}
+            ts.update(LINK_STYLE, link={'url': links.url(st['link'])})
         if ts:
             reqs.append({'updateTextStyle': {'range': {'startIndex': at, 'endIndex': at + u16(t)}, 'textStyle': ts,
                                              'fields': ','.join(ts)}})
@@ -358,6 +376,129 @@ def plan(gblocks, mblocks):
     return [op for op in difflib.SequenceMatcher(None, *keys, autojunk=False).get_opcodes() if op[0] != 'equal']
 
 
+def steps(gblocks, mblocks):
+    """What brings the Google Doc to the Markdown, top to bottom: ('edit', i, j) edits paragraph i in
+    place into Markdown block j; ('swap', i1, i2, j1, j2) replaces blocks i1..i2 whole with j1..j2."""
+    out = []
+    keys = ([doc_key(b) for b in gblocks], [md_key(k, b) for k, b in mblocks])
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, *keys, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            # Alike but for spacing: restyling sets styles by offset, so the spacing is made exact too.
+            out += [('edit', i, j) for i, j in zip(range(i1, i2), range(j1, j2))
+                    if mblocks[j][0] != 'table' and gblocks[i]['text'].translate(QUOTES) != plain(mblocks[j][1])]
+            continue
+        i, j = i1, j1
+        for pi, pj in pairs(gblocks[i1:i2], mblocks[j1:j2]):
+            if (i, j) != (i1 + pi, j1 + pj):
+                out.append(('swap', i, i1 + pi, j, j1 + pj))
+            out.append(('edit', i1 + pi, j1 + pj))
+            i, j = i1 + pi + 1, j1 + pj + 1
+        if (i, j) != (i2, j2):
+            out.append(('swap', i, i2, j, j2))
+    return out
+
+
+def pairs(gblocks, mblocks):
+    """Order-preserving (i, j) pairs of a changed run's paragraphs alike enough to edit in place."""
+    sim = [[likeness(b, kind, body) for kind, body in mblocks] for b in gblocks]
+    best = [[0.0] * (len(mblocks) + 1) for _ in range(len(gblocks) + 1)]
+    for i in range(len(gblocks)):
+        for j in range(len(mblocks)):
+            best[i + 1][j + 1] = max(best[i][j + 1], best[i + 1][j], best[i][j] + sim[i][j] if sim[i][j] else 0)
+    out, i, j = [], len(gblocks), len(mblocks)
+    while i and j:
+        if best[i][j] == best[i - 1][j]:
+            i -= 1
+        elif best[i][j] == best[i][j - 1]:
+            j -= 1
+        else:
+            i, j = i - 1, j - 1
+            out.append((i, j))
+    return out[::-1]
+
+
+def likeness(b, kind, body):
+    """Share of words a Google Doc paragraph and a Markdown block have in common, in order; 0 when the
+    paragraph can't be edited in place (another kind, a table, or not text alone, such as a chip)."""
+    if b['kind'] != kind or kind == 'table' or u16(b['text']) + 1 != b['end'] - b['start']:
+        return 0
+    words = [[t for t in tokens(s.translate(QUOTES)) if not t.isspace()] for s in (b['text'], plain(body))]
+    r = difflib.SequenceMatcher(None, *words, autojunk=False).ratio()
+    return r if r >= SAME else 0
+
+
+def tokens(s):
+    return re.findall(r'\w+|\s+|[^\w\s]', s)
+
+
+def word_edits(old, new):
+    """Both texts as tokens, and the changes between them, compared with quotes folded. Changes only a
+    space or a short word apart are one change, so a rewritten phrase reads, and goes in, whole."""
+    a, b = tokens(old), tokens(new)
+    sm = difflib.SequenceMatcher(None, [t.translate(QUOTES) for t in a], [t.translate(QUOTES) for t in b], autojunk=False)
+    out = []
+    for tag, a1, a2, b1, b2 in sm.get_opcodes():
+        if tag == 'equal':
+            continue
+        if out and len(''.join(a[out[-1][2]:a1]).strip()) <= 3:
+            out[-1] = ('replace', out[-1][1], a2, out[-1][3], b2)
+        else:
+            out.append((tag, a1, a2, b1, b2))
+    return a, b, out
+
+
+def edit_requests(b, body):
+    """Requests editing Google Doc paragraph b into Markdown `body`: changed words only, bottom up, so a
+    comment keeps its anchor unless its own words change."""
+    a, new, ops = word_edits(b['text'], plain(body))
+    at = [b['start']]
+    for t in a:
+        at.append(at[-1] + u16(t))
+    reqs = []
+    for _, a1, a2, b1, b2 in reversed(ops):
+        if a2 > a1:
+            reqs.append({'deleteContentRange': {'range': {'startIndex': at[a1], 'endIndex': at[a2]}}})
+        if b2 > b1:
+            reqs.append({'insertText': {'location': {'index': at[a1]}, 'text': ''.join(new[b1:b2])}})
+    return reqs
+
+
+def word_diff(old, new):
+    """A paragraph's edits for the dry run: [-out-]{+in+}, long unchanged stretches cut short."""
+    a, b, ops = word_edits(old, new)
+    out, k = [], 0
+    for _, a1, a2, b1, b2 in ops:
+        same = ''.join(a[k:a1])
+        out.append(same if len(same) <= 60 else (same[:25] + '…' + same[-25:] if k else '…' + same[-40:]))
+        out.append((f'[-{"".join(a[a1:a2])}-]' if a2 > a1 else '') + (f'{{+{"".join(b[b1:b2])}+}}' if b2 > b1 else ''))
+        k = a2
+    tail = ''.join(a[k:])
+    return ''.join(out) + (tail if len(tail) <= 40 else tail[:40] + '…')
+
+
+def comment_fate(quote, gblocks, mblocks, todo):
+    """'goes' when a push deletes all of a comment's anchored text, 'edited' when it changes some of it."""
+    for step in todo:
+        if step[0] == 'swap':
+            if any(quote in gblocks[i]['text'] for i in range(step[1], step[2])):
+                return 'goes'
+            continue
+        text = gblocks[step[1]]['text']
+        p = text.find(quote)
+        if p < 0:
+            continue
+        a, _, ops = word_edits(text, plain(mblocks[step[2]][1]))
+        at = [0]
+        for t in a:
+            at.append(at[-1] + len(t))
+        gone = sum(max(0, min(at[a2], p + len(quote)) - max(at[a1], p)) for _, a1, a2, _, _ in ops)
+        if gone >= len(quote):
+            return 'goes'
+        if gone or any(p < at[a1] < p + len(quote) for _, a1, _, _, _ in ops):
+            return 'edited'
+    return None
+
+
 def edited_since_push(repo, name, gblocks, mblocks):
     """Edits made in the Google Doc since the last push that a push would undo: text added there that
     the Markdown lacks, and text removed there that the Markdown still has. None before any push."""
@@ -379,7 +520,7 @@ def push(g, repo, name, dry_run=False, force=False):
     doc = g.doc(doc_id)
     gblocks = doc_blocks(doc)
     edited = edited_since_push(repo, name, gblocks, mblocks)
-    if edited is None and gblocks and not force:
+    if edited is None and gblocks and not force and not dry_run:
         sys.exit(f'{name}: no record of a previous push, so edits made in the Google Doc cannot be told apart.\n'
                  f'Compare it by hand, then push with --force; later pushes will check.')
     if edited and not force:
@@ -387,28 +528,37 @@ def push(g, repo, name, dry_run=False, force=False):
         for t in edited:
             print('  ·', t[:160])
         sys.exit(2)
-    ops = plan(gblocks, mblocks)
+    todo = steps(gblocks, mblocks)
+    swaps = [s for s in todo if s[0] == 'swap']
     comments = g.open_comments(doc_id)
-    hit = [q for q in comments if q and any(q in gblocks[i]['text'] for op in ops for i in range(op[1], op[2]))]
-    print(f'{name}: {len(ops)} change(s): {sum(o[2] - o[1] for o in ops)} paragraph(s) out, '
-          f'{sum(o[4] - o[3] for o in ops)} in; {len(hit)} of {len(comments)} open comment(s) anchored in text that goes')
-    for q in hit:
-        print('  comment on:', q[:120])
+    fates = [(comment_fate(c['quote'], gblocks, mblocks, todo), c['quote']) for c in comments if c['quote']]
+    hit = [(f, q) for f, q in fates if f]
+    print(f'{name}: {len(todo) - len(swaps)} paragraph(s) edited in place, {sum(s[2] - s[1] for s in swaps)} out, '
+          f'{sum(s[4] - s[3] for s in swaps)} in; {len(hit)} of {len(comments)} open comment(s) anchored in text that changes')
+    for f, q in hit:
+        print('  comment loses its anchor:' if f == 'goes' else '  comment keeps an edited anchor:', q[:120])
     if dry_run:
-        for op, i1, i2, j1, j2 in ops:
-            for i in range(i1, i2):
+        for s in todo:
+            if s[0] == 'edit':
+                print('  ~', word_diff(gblocks[s[1]]['text'], plain(mblocks[s[2]][1])))
+                continue
+            for i in range(s[1], s[2]):
                 print('  -', gblocks[i]['text'][:140])
-            for j in range(j1, j2):
+            for j in range(s[3], s[4]):
                 print('  +', md_key(*mblocks[j])[1][:140])
         return
     # Bottom up, one change at a time, reading the document again after each.
-    for _ in range(len(ops) + len(mblocks) + 5):
+    for _ in range(len(todo) + len(mblocks) + 5):
         doc = g.doc(doc_id)
         gblocks = doc_blocks(doc)
-        ops = plan(gblocks, mblocks)
-        if not ops:
+        todo = steps(gblocks, mblocks)
+        if not todo:
             break
-        op, i1, i2, j1, j2 = ops[-1]
+        if todo[-1][0] == 'edit':
+            _, i, j = todo[-1]
+            g.batch(doc_id, edit_requests(gblocks[i], mblocks[j][1]), doc['revisionId'])
+            continue
+        _, i1, i2, j1, j2 = todo[-1]
         at = insertion_point(doc, gblocks, i1)
         reqs = [{'deleteContentRange': {'range': {'startIndex': gblocks[i1]['start'], 'endIndex': gblocks[i2 - 1]['end']}}}] if i2 > i1 else []
         new = mblocks[j1:j2]
@@ -455,6 +605,15 @@ def restyle(g, repo, name, mblocks, refs):
     doc_id = repo.map[name]
     doc = g.doc(doc_id)
     gblocks = doc_blocks(doc)
+    # A heading made in the Google Docs editor has no id until something links to it there; setting its
+    # style again gives it one, so links can reach it. Text stays, so comments stay.
+    bare = [b for b in gblocks if b['kind'] in HEADINGS and not b['heading']]
+    if bare:
+        g.batch(doc_id, [{'updateParagraphStyle': {'range': {'startIndex': b['start'], 'endIndex': b['end']},
+                                                   'paragraphStyle': {'namedStyleType': s}, 'fields': 'namedStyleType'}}
+                         for b in bare for s in ('NORMAL_TEXT', HEADINGS[b['kind']])], doc['revisionId'])
+        doc = g.doc(doc_id)
+        gblocks = doc_blocks(doc)
     if len(gblocks) != len(mblocks):
         sys.exit(f'{name}: {len(gblocks)} blocks in the Google Doc against {len(mblocks)} in the Markdown after the push')
     links = Links(g, repo, name, refs)
@@ -489,6 +648,51 @@ def status(g, repo):
         print('not mapped:', ', '.join(unmapped))
 
 
+def export(g, repo, names, where):
+    """A git repo at `where` for any diff tool: tag `google` holds each Google Doc's text and the working
+    tree its Markdown's, both as a push compares them; comments.json beside them holds each doc's open
+    comments, with their quotes as they read there, and what a push does to their anchors."""
+    where.mkdir(parents=True, exist_ok=True)
+    run = lambda *a: subprocess.run(['git', '-C', where, '-c', 'user.name=gdocsync', '-c', 'user.email=gdocsync@localhost', *a],
+                                    capture_output=True, check=True)
+    if not (where / '.git').exists():
+        run('init', '-q')
+    sides, notes = {}, json.loads((where / 'comments.json').read_text()) if (where / 'comments.json').exists() else {}
+    for name in names:
+        gblocks = doc_blocks(g.doc(repo.map[name]))
+        mblocks, _ = md_blocks((repo.root / name).read_text())
+        sides[name] = (as_markdown([(doc_key(b)[0], doc_key(b)[1], b.get('table') and table_rows(b['table'])) for b in gblocks]),
+                       as_markdown([(*md_key(k, b), k == 'table' and [[plain(c) for c in row] for row in b]) for k, b in mblocks]))
+        todo = steps(gblocks, mblocks)
+        notes[name] = [{**c, 'quote': norm(c['quote']), 'fate': comment_fate(c['quote'], gblocks, mblocks, todo)}
+                       for c in g.open_comments(repo.map[name]) if c['quote']]
+    for name, (google, _) in sides.items():
+        (where / name).write_text(google)
+    run('add', '--', *sides)
+    run('commit', '-q', '--allow-empty', '-m', 'Google Docs ' + time.strftime('%Y-%m-%d %H:%M'))
+    run('tag', '-f', 'google')
+    for name, (_, markdown) in sides.items():
+        (where / name).write_text(markdown)
+    (where / 'comments.json').write_text(json.dumps(notes, indent=1, ensure_ascii=False))
+    print(f'{where}: tag google is the Google Doc, the working tree the Markdown, for {len(sides)} file(s);'
+          f' open comments in comments.json')
+
+
+def as_markdown(blocks):
+    """Blocks [(kind, text, table rows or None)] as Markdown that renders each one as it reads."""
+    esc = lambda s: re.sub(r'^(\d+)([.)])', r'\1\\\2', re.sub(r'([\\`*_\[\]<>#|~&+-])', r'\\\1', s))
+    out, last = '', None
+    for kind, text, rows in blocks:
+        out += '' if last is None else '\n' if kind == last and kind in LIST_PRESET else '\n\n'
+        if kind == 'table':
+            cells = lambda row: '| ' + ' | '.join(esc(norm(c)) for c in row) + ' |'
+            out += '\n'.join([cells(rows[0]), '|' + ' --- |' * len(rows[0]), *map(cells, rows[1:])])
+        else:
+            out += {'h1': '# ', 'h2': '## ', 'h3': '### ', 'ul': '- ', 'ol': '1. '}.get(kind, '') + esc(text)
+        last = kind
+    return out + '\n'
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--repo', default='.')
@@ -504,6 +708,9 @@ def main():
     s = sub.add_parser('map')
     s.add_argument('file')
     s.add_argument('doc_id')
+    s = sub.add_parser('export')
+    s.add_argument('files', nargs='*')
+    s.add_argument('--to')
     a = p.parse_args()
     repo, g = Repo(a.repo), Google()
     name = getattr(a, 'file', None)
@@ -511,6 +718,12 @@ def main():
         sys.exit(f'{name}: no such file in {repo.root}')
     if a.cmd == 'status':
         status(g, repo)
+    elif a.cmd == 'export':
+        names = a.files or sorted(n for n in repo.map if (repo.root / n).exists())
+        for n in names:
+            if n not in repo.map:
+                sys.exit(f'{n} has no Google Doc: create or map it first')
+        export(g, repo, names, pathlib.Path(a.to) if a.to else repo.state / f'{repo.root.name}-google')
     elif a.cmd == 'map':
         repo.set_map(name, a.doc_id)
         print(f'{name} -> https://docs.google.com/document/d/{a.doc_id}/edit')
