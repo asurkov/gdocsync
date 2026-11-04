@@ -13,6 +13,7 @@ Drive APIs directly with gdocs-mcp's sign-in (`~/.gdocs-mcp`).
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> status
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> push <file.md> --dry-run
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> push <file.md>
+python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> push <file.md> --target <T.md> [--dry-run]
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> create <file.md> [--title T]
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> map <file.md> <document id>
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> export [<file.md>…] [--to DIR]
@@ -25,6 +26,13 @@ whose working tree holds its Markdown's, both as the plain text a push compares,
 them, `comments.json` holds each doc's open comments: `{file: [{quote, author, date, text, replies,
 fate}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
 some of it.
+
+`push --target T` publishes only some of the changes: T is a Markdown file made from the last export,
+the Google Doc's text with the changes to publish taken in (a diff tool's accepted copy, say). The push
+brings the Google Doc to T; paragraphs that then read as in the Markdown get its styles and links,
+the others keep the Google Doc's, and words inserted into those start plain. Every change in T was
+chosen, so it needs no `--force`, even on a doc never pushed. It stops if the Google Doc or the
+Markdown changed since the export: export again and make T from that.
 
 Which Google Doc belongs to which file is per repo and per machine (`~/.gdocsync/<repo>/map.json`); a
 project's own instructions say which repo it syncs and with what care.
@@ -55,7 +63,8 @@ shared docs.
   into the Markdown (then commit as usual), and push again. `--force` overwrites them: only on the
   user's word.
 - A doc never pushed by gdocsync has no snapshot, so its own edits can't be told apart: the push refuses
-  without `--force`. Compare by hand first (the dry run lists every change: `~` a paragraph's edits, `-` and `+` blocks out and in).
+  without `--force`. Compare by hand first (the dry run lists every change: `~` a paragraph's edits, `-` and `+` blocks out and in),
+  or publish the changes one by one with `--target`.
 - `invalid_grant` or "sign-in expired": only the user can fix it, with `npx gdocs-mcp auth`.
 - Sharing a new Google Doc is the user's decision; `create` leaves it private.
 

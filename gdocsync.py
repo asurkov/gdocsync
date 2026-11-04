@@ -2,7 +2,7 @@
 """Keep Google Docs in step with a repo's Markdown docs.
 
 Usage: gdocsync.py [--repo PATH] status
-       gdocsync.py [--repo PATH] push FILE [--dry-run] [--force]
+       gdocsync.py [--repo PATH] push FILE [--dry-run] [--force | --target T]
        gdocsync.py [--repo PATH] create FILE [--title TITLE]
        gdocsync.py [--repo PATH] map FILE DOC_ID
        gdocsync.py [--repo PATH] export [FILE...] [--to DIR]
@@ -16,10 +16,15 @@ its anchor names; any other relative link goes to the file on GitHub.
 Before a push, the Google Doc is compared with what the last push left in it. If someone edited it
 since, the push lists those paragraphs and stops: merge them into the Markdown first, or pass --force.
 
+push --target T brings the Google Doc to T instead: a Markdown file made from the last export, such as
+its Google Doc text with some of the Markdown's changes taken in. Paragraphs that then read as in FILE
+get FILE's styles and links; the others keep the Google Doc's. It stops if the Google Doc or FILE
+changed since the export.
+
 State lives in ~/.gdocsync/<repo name>/: map.json (file -> document id) and snapshots/ (each Google
 Doc's paragraphs as the last push left them). Credentials are gdocs-mcp's, in ~/.gdocs-mcp.
 """
-import argparse, difflib, html, json, os, pathlib, re, subprocess, sys, time, urllib.error, urllib.parse
+import argparse, difflib, html, json, os, pathlib, re, string, subprocess, sys, time, urllib.error, urllib.parse
 import urllib.request
 
 AUTH = pathlib.Path('~/.gdocs-mcp').expanduser()
@@ -112,7 +117,7 @@ def md_blocks(md):
             rows = []
             while i < len(lines) and lines[i].startswith('|'):
                 if not re.match(r'^\|[-| :]+\|$', lines[i]):
-                    rows.append([c.strip() for c in lines[i].strip().strip('|').split('|')])
+                    rows.append([c.strip() for c in re.split(r'(?<!\\)\|', lines[i].strip().strip('|'))])
                 i += 1
             out.append(('table', rows))
         elif re.match(r'^(- |\d+\. )', l):
@@ -145,6 +150,10 @@ def runs(text, style=None):
             buf = ''
     while i < len(text):
         c = text[i]
+        if c == '\\' and text[i + 1:i + 2] in set(string.punctuation):
+            buf += text[i + 1]
+            i += 2
+            continue
         if c == '[':
             depth, j = 0, i
             while j < len(text):
@@ -376,16 +385,18 @@ def plan(gblocks, mblocks):
     return [op for op in difflib.SequenceMatcher(None, *keys, autojunk=False).get_opcodes() if op[0] != 'equal']
 
 
-def steps(gblocks, mblocks):
+def steps(gblocks, mblocks, styled=None):
     """What brings the Google Doc to the Markdown, top to bottom: ('edit', i, j) edits paragraph i in
-    place into Markdown block j; ('swap', i1, i2, j1, j2) replaces blocks i1..i2 whole with j1..j2."""
+    place into Markdown block j; ('swap', i1, i2, j1, j2) replaces blocks i1..i2 whole with j1..j2.
+    styled: the Markdown blocks that get styles set afterwards (default all)."""
     out = []
     keys = ([doc_key(b) for b in gblocks], [md_key(k, b) for k, b in mblocks])
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, *keys, autojunk=False).get_opcodes():
         if tag == 'equal':
             # Alike but for spacing: restyling sets styles by offset, so the spacing is made exact too.
             out += [('edit', i, j) for i, j in zip(range(i1, i2), range(j1, j2))
-                    if mblocks[j][0] != 'table' and gblocks[i]['text'].translate(QUOTES) != plain(mblocks[j][1])]
+                    if (styled is None or j in styled) and mblocks[j][0] != 'table'
+                    and gblocks[i]['text'].translate(QUOTES) != plain(mblocks[j][1])]
             continue
         i, j = i1, j1
         for pi, pj in pairs(gblocks[i1:i2], mblocks[j1:j2]):
@@ -459,7 +470,10 @@ def edit_requests(b, body):
         if a2 > a1:
             reqs.append({'deleteContentRange': {'range': {'startIndex': at[a1], 'endIndex': at[a2]}}})
         if b2 > b1:
-            reqs.append({'insertText': {'location': {'index': at[a1]}, 'text': ''.join(new[b1:b2])}})
+            text = ''.join(new[b1:b2])
+            reqs += [{'insertText': {'location': {'index': at[a1]}, 'text': text}},
+                     {'updateTextStyle': {'range': {'startIndex': at[a1], 'endIndex': at[a1] + u16(text)}, 'textStyle': {},
+                                          'fields': STYLE_FIELDS}}]
     return reqs
 
 
@@ -513,13 +527,19 @@ def edited_since_push(repo, name, gblocks, mblocks):
     return added + ['(removed) ' + t for t in removed]
 
 
-def push(g, repo, name, dry_run=False, force=False):
+def push(g, repo, name, dry_run=False, force=False, target=None):
     doc_id = repo.map.get(name) or sys.exit(f'{name} has no Google Doc: create or map it first')
     md = (repo.root / name).read_text()
     mblocks, refs = md_blocks(md)
     doc = g.doc(doc_id)
     gblocks = doc_blocks(doc)
-    edited = edited_since_push(repo, name, gblocks, mblocks)
+    if target:
+        # Every change in the target was taken in on purpose, so edits made in the Google Doc that it
+        # undoes need no --force.
+        mblocks, styled = target_blocks(repo, name, gblocks, mblocks, target)
+        edited = []
+    else:
+        styled, edited = None, edited_since_push(repo, name, gblocks, mblocks)
     if edited is None and gblocks and not force and not dry_run:
         sys.exit(f'{name}: no record of a previous push, so edits made in the Google Doc cannot be told apart.\n'
                  f'Compare it by hand, then push with --force; later pushes will check.')
@@ -528,7 +548,7 @@ def push(g, repo, name, dry_run=False, force=False):
         for t in edited:
             print('  ·', t[:160])
         sys.exit(2)
-    todo = steps(gblocks, mblocks)
+    todo = steps(gblocks, mblocks, styled)
     swaps = [s for s in todo if s[0] == 'swap']
     comments = g.open_comments(doc_id)
     fates = [(comment_fate(c['quote'], gblocks, mblocks, todo), c['quote']) for c in comments if c['quote']]
@@ -551,7 +571,7 @@ def push(g, repo, name, dry_run=False, force=False):
     for _ in range(len(todo) + len(mblocks) + 5):
         doc = g.doc(doc_id)
         gblocks = doc_blocks(doc)
-        todo = steps(gblocks, mblocks)
+        todo = steps(gblocks, mblocks, styled)
         if not todo:
             break
         if todo[-1][0] == 'edit':
@@ -575,9 +595,27 @@ def push(g, repo, name, dry_run=False, force=False):
         g.batch(doc_id, reqs, doc['revisionId'])
     else:
         sys.exit(f'{name}: the Google Doc did not converge on the Markdown; check it')
-    restyle(g, repo, name, mblocks, refs)
+    restyle(g, repo, name, mblocks, refs, styled)
     repo.save_snapshot(name, doc_blocks(g.doc(doc_id)))
     print(f'{name}: pushed to https://docs.google.com/document/d/{doc_id}/edit')
+
+
+def target_blocks(repo, name, gblocks, mblocks, target):
+    """The blocks push --target brings the Google Doc to: the target's, each taken from the Markdown where
+    it reads the same there, so it gets the Markdown's styles and links; and the indices of those. The
+    target is made from the last export, so the Google Doc and the Markdown must read as they did then."""
+    f = repo.state / 'exported' / f'{name}.json'
+    then = json.loads(f.read_text()) if f.exists() else sys.exit(f'{name}: not exported yet; make the target from an export')
+    if [list(doc_key(b)) for b in gblocks] != then['google'] or [list(md_key(*b)) for b in mblocks] != then['markdown']:
+        sys.exit(f'{name}: the Google Doc or the Markdown changed since the export; export again and make the target from that')
+    tblocks, _ = md_blocks(pathlib.Path(target).read_text())
+    goal, styled = list(tblocks), set()
+    keys = ([md_key(*b) for b in tblocks], [md_key(*b) for b in mblocks])
+    for tag, i1, i2, j1, _ in difflib.SequenceMatcher(None, *keys, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            goal[i1:i2] = mblocks[j1:j1 + i2 - i1]
+            styled.update(range(i1, i2))
+    return goal, styled
 
 
 def insertion_point(doc, gblocks, i):
@@ -600,8 +638,9 @@ def _starts(blocks, at):
         at += u16(plain(body)) + 1
 
 
-def restyle(g, repo, name, mblocks, refs):
-    """Reset and reapply inline styles and links on every paragraph; text and comments stay."""
+def restyle(g, repo, name, mblocks, refs, styled=None):
+    """Reset and reapply inline styles and links on every paragraph (or those in styled); text and
+    comments stay."""
     doc_id = repo.map[name]
     doc = g.doc(doc_id)
     gblocks = doc_blocks(doc)
@@ -619,8 +658,8 @@ def restyle(g, repo, name, mblocks, refs):
     links = Links(g, repo, name, refs)
     links.headings(name, doc)
     reqs = []
-    for b, (kind, body) in zip(gblocks, mblocks):
-        if kind == 'table':
+    for j, (b, (kind, body)) in enumerate(zip(gblocks, mblocks)):
+        if kind == 'table' or styled is not None and j not in styled:
             continue
         reqs.append({'updateTextStyle': {'range': {'startIndex': b['start'], 'endIndex': b['end'] - 1}, 'textStyle': {},
                                          'fields': STYLE_FIELDS}})
@@ -651,7 +690,8 @@ def status(g, repo):
 def export(g, repo, names, where):
     """A git repo at `where` for any diff tool: tag `google` holds each Google Doc's text and the working
     tree its Markdown's, both as a push compares them; comments.json beside them holds each doc's open
-    comments, with their quotes as they read there, and what a push does to their anchors."""
+    comments, with their quotes as they read there, and what a push does to their anchors. What each side
+    read is kept in the state too, so push --target can tell that a target made from it is current."""
     where.mkdir(parents=True, exist_ok=True)
     run = lambda *a: subprocess.run(['git', '-C', where, '-c', 'user.name=gdocsync', '-c', 'user.email=gdocsync@localhost', *a],
                                     capture_output=True, check=True)
@@ -663,6 +703,9 @@ def export(g, repo, names, where):
         mblocks, _ = md_blocks((repo.root / name).read_text())
         sides[name] = (as_markdown([(doc_key(b)[0], doc_key(b)[1], b.get('table') and table_rows(b['table'])) for b in gblocks]),
                        as_markdown([(*md_key(k, b), k == 'table' and [[plain(c) for c in row] for row in b]) for k, b in mblocks]))
+        (repo.state / 'exported').mkdir(exist_ok=True)
+        (repo.state / 'exported' / f'{name}.json').write_text(json.dumps(
+            {'google': [doc_key(b) for b in gblocks], 'markdown': [md_key(*b) for b in mblocks]}, indent=0, ensure_ascii=False))
         todo = steps(gblocks, mblocks)
         notes[name] = [{**c, 'quote': norm(c['quote']), 'fate': comment_fate(c['quote'], gblocks, mblocks, todo)}
                        for c in g.open_comments(repo.map[name]) if c['quote']]
@@ -702,6 +745,7 @@ def main():
     s.add_argument('file')
     s.add_argument('--dry-run', action='store_true')
     s.add_argument('--force', action='store_true')
+    s.add_argument('--target')
     s = sub.add_parser('create')
     s.add_argument('file')
     s.add_argument('--title')
@@ -733,7 +777,7 @@ def main():
         repo.set_map(name, g.create(a.title or pathlib.Path(name).stem))
         push(g, repo, name, force=True)
     else:
-        push(g, repo, name, a.dry_run, a.force)
+        push(g, repo, name, a.dry_run, a.force, a.target)
 
 
 if __name__ == '__main__':

@@ -55,6 +55,7 @@ python3 -I $G --repo <repo> map <file.md> <document id>   # a Google Doc that al
 python3 -I $G --repo <repo> create <file.md>               # a new, private Google Doc
 python3 -I $G --repo <repo> status
 python3 -I $G --repo <repo> export                         # Google Docs vs Markdown, for a diff tool
+python3 -I $G --repo <repo> push <file.md> --target <T.md> # only the changes taken into T, made from an export
 ```
 
 The document id is the part of the Google Doc's URL between `/d/` and `/edit`.
