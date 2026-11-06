@@ -674,6 +674,32 @@ def restyle(g, repo, name, mblocks, refs, styled=None):
     g.batch(doc_id, reqs, doc['revisionId'])
 
 
+def local_state(repo, name):
+    """The Markdown file against git: committed, uncommitted (edited since the last commit) or new."""
+    s = subprocess.run(['git', '-C', repo.root, 'status', '--porcelain', '--', name], capture_output=True, text=True).stdout
+    return 'new' if s.startswith('??') else 'uncommitted' if s.strip() else 'committed'
+
+
+def standing(repo, name, gblocks=None, mblocks=None):
+    """Where a doc stands, as data and in words: its Markdown against git, its Google Doc against the
+    Markdown (what a push would change), and whether the Google Doc was edited since the last push.
+    Without blocks, the doc has no Google Doc."""
+    local = local_state(repo, name)
+    words = {'committed': 'Committed', 'uncommitted': 'Uncommitted edits', 'new': 'Not committed yet'}[local]
+    if gblocks is None:
+        return {'local': local, 'unpublished': None, 'edited': None, 'stand': words + '; no Google Doc'}
+    ops, edited = plan(gblocks, mblocks), edited_since_push(repo, name, gblocks, mblocks)
+    if not ops:
+        words += ', and the Google Doc matches' if local == 'committed' else ', already in the Google Doc'
+    else:
+        words += f'; {len(ops)} change(s) not in the Google Doc yet'
+    if edited is None:
+        words += '; never pushed from here'
+    elif edited:
+        words += f'; {len(edited)} paragraph(s) edited in the Google Doc since the last push'
+    return {'local': local, 'unpublished': len(ops), 'edited': None if edited is None else len(edited), 'stand': words}
+
+
 def status(g, repo):
     if not repo.map:
         print(f'{repo.root.name}: no Markdown file is mapped to a Google Doc yet')
@@ -682,13 +708,8 @@ def status(g, repo):
             print(f'{name}: mapped, but the file is gone')
             continue
         mblocks, _ = md_blocks((repo.root / name).read_text())
-        gblocks = doc_blocks(g.doc(doc_id))
-        ops = plan(gblocks, mblocks)
-        edited = edited_since_push(repo, name, gblocks, mblocks)
-        comments = len(g.open_comments(doc_id))
-        state = 'in step' if not ops else f'{len(ops)} change(s) to push'
-        since = 'never pushed by gdocsync' if edited is None else (f'{len(edited)} paragraph(s) edited in the Google Doc' if edited else 'not edited since')
-        print(f'{name}: {state}; {since}; {comments} open comment(s)')
+        d = standing(repo, name, doc_blocks(g.doc(doc_id)), mblocks)
+        print(f'{name}: {d["stand"]}; {len(g.open_comments(doc_id))} open comment(s)')
     unmapped = sorted(p.name for p in repo.root.glob('*.md') if p.name not in repo.map and p.name != 'README.md')
     if unmapped:
         print('not mapped:', ', '.join(unmapped))
@@ -720,18 +741,18 @@ def export(g, repo, names, where):
         todo, cs = steps(gblocks, mblocks), g.open_comments(repo.map[name])
         notes[name] = [{**c, 'quote': norm(c['quote']), 'fate': comment_fate(c['quote'], gblocks, mblocks, todo)}
                        for c in cs if c['quote']]
-        ops, edited = plan(gblocks, mblocks), edited_since_push(repo, name, gblocks, mblocks)
+        was = docs.get(name, {})
         docs[name] = {'file': name, 'title': titles.get(name) or first_heading(repo.root / name) or name,
                       'url': f'https://docs.google.com/document/d/{repo.map[name]}/edit',
-                      'state': 'in step' if not ops else f'{len(ops)} change(s) to push',
-                      'since': 'never pushed by gdocsync' if edited is None else
-                               f'{len(edited)} paragraph(s) edited in the Google Doc' if edited else 'not edited since',
-                      'comments': len(cs)}
+                      **standing(repo, name, gblocks, mblocks), 'comments': len(cs)}
+        # browse's link to the doc's uncommitted edits holds while there are some.
+        if docs[name]['local'] != 'committed' and was.get('local_diff'):
+            docs[name]['local_diff'] = was['local_diff']
     # Markdown files with no Google Doc are listed too, so the list is the whole repo, but for README.md.
     for p in repo.root.glob('*.md'):
         if p.name not in repo.map and p.name != 'README.md':
             docs[p.name] = {'file': p.name, 'title': titles.get(p.name) or first_heading(p) or p.name, 'url': None,
-                            'state': 'no Google Doc', 'since': '', 'comments': 0}
+                            **standing(repo, p.name), 'comments': 0}
     docs.pop('README.md', None)
     for name, (google, _) in sides.items():
         (where / name).write_text(google)
@@ -762,15 +783,42 @@ def first_heading(path):
     return m.group(1).strip() if m else None
 
 
+def local_page(repo):
+    """The URL of docdiff's page of the repo's uncommitted edits, started in the background (or already
+    running), or None if it does not come up within a minute."""
+    log = repo.state / 'local-docdiff.log'
+    with open(log, 'w') as out:
+        p = subprocess.Popen([sys.executable, '-I', str(DOCDIFF), '--repo', str(repo.root), '--base', 'HEAD', '--serve'],
+                             stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+    for _ in range(600):
+        m = re.search(r'^URL: (\S+)', log.read_text(), re.M)
+        if m:
+            return m.group(1)
+        if p.poll() is not None:
+            return None
+        time.sleep(0.1)
+    return None
+
+
 def browse(g, repo):
     """Exports every mapped doc, then hands over to docdiff on the export, with its docs list on top,
-    every mapped doc named so one in step shows too, and publishing through push --target, then export."""
+    every mapped doc named so one in step shows too, and publishing through push --target, then export.
+    With uncommitted edits, a second docdiff page shows them against the last commit, and each doc that
+    has some links to it there."""
     if not DOCDIFF.exists():
         sys.exit(f'{DOCDIFF}: docdiff not found')
     where = repo.state / f'{repo.root.name}-google'
     order, _ = readme_order(repo)
     names = sorted((n for n in repo.map if (repo.root / n).exists()), key=lambda n: (order.get(n, len(order)), n))
     export(g, repo, names, where)
+    docs = json.loads((where / 'docs.json').read_text())
+    if any(d['local'] != 'committed' for d in docs):
+        url = local_page(repo)
+        for d in docs:
+            d.pop('local_diff', None)
+            if url and d['local'] != 'committed':
+                d['local_diff'] = f'{url}#file={urllib.parse.quote(d["file"])}'
+        (where / 'docs.json').write_text(json.dumps(docs, indent=1, ensure_ascii=False))
     me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
     sys.stdout.flush()
     os.execv(sys.executable, [sys.executable, '-I', str(DOCDIFF), '--repo', str(where), '--base', 'google',

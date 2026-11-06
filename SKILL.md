@@ -22,9 +22,18 @@ python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> browse
 
 `browse` is the project browser: it exports every mapped doc and hands over to docdiff on the export
 (run it with `run_in_background`, then open the `URL:` it prints in the built-in browser). The page
-lists every Markdown file, its name a link to the doc below, with a link to its Google Doc, where the two
-stand (as `status` says) and its open comments. Below, every mapped doc shows with its comments marked,
-one that differs as what a push would change, to accept and publish there with "⇪ publish accepted".
+lists every Markdown file, its name a link to the doc below, with a link to its Google Doc, where it
+stands in one sentence (as `status` says it) and its open comments. The sentence covers the three
+versions of a doc: committed, uncommitted edits, and the Google Doc ("Uncommitted edits, already in the
+Google Doc"), with a link to each comparison that has something: "uncommitted edits ↗" opens a second
+docdiff page of the repo's uncommitted edits (against `HEAD`, started in the background) at that doc,
+"what a push would change ↓" the doc below. Below, every mapped doc shows with its comments marked, one
+that differs as what a push would change, to accept and publish there with "⇪ publish accepted". The
+local page's link changes when its server restarts: run `browse` again.
+
+`status` says the same sentence per doc: whether the Markdown is committed, whether the Google Doc
+matches it (or how many changes a push would make), and whether the Google Doc was edited since the
+last push or never pushed from here.
 
 `export` shows what a push would change in a diff tool of your choice. It writes a git repo
 (`~/.gdocsync/<repo>/<repo>-google/` by default) whose tag `google` holds each Google Doc's text and
@@ -33,8 +42,9 @@ whose working tree holds its Markdown's, both as the plain text a push compares,
 them, `comments.json` holds each doc's open comments: `{file: [{quote, author, date, text, replies,
 fate, url}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
 some of it, and `url` opening the Google Doc on the comment; `docs.json` lists every Markdown file but
-README.md, with its Google Doc and where the two stand, `[{file, title, url, state, since, comments}]`, in
-the order README.md links them and titled with its words for each (others after, titled by their first
+README.md, with its Google Doc and where it stands, `[{file, title, url, local (committed, uncommitted or
+new), unpublished (changes a push would make), edited (paragraphs edited in the Google Doc since the last
+push; null if never pushed), stand (the sentence), comments, local_diff}]`, in the order README.md links them and titled with its words for each (others after, titled by their first
 heading).
 
 `push --target T` publishes only some of the changes: T is a Markdown file made from the last export,
