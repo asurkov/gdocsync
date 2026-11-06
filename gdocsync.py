@@ -743,18 +743,20 @@ def export(g, repo, names, where):
 
 
 def browse(g, repo):
-    """Exports every mapped doc, then hands over to docdiff on the export, with its docs list on top and
-    publishing through push --target, then export."""
+    """Exports every mapped doc, then hands over to docdiff on the export, with its docs list on top,
+    every mapped doc named so one in step shows too, and publishing through push --target, then export."""
     if not DOCDIFF.exists():
         sys.exit(f'{DOCDIFF}: docdiff not found')
     where = repo.state / f'{repo.root.name}-google'
-    export(g, repo, sorted(n for n in repo.map if (repo.root / n).exists()), where)
+    names = sorted(n for n in repo.map if (repo.root / n).exists())
+    export(g, repo, names, where)
     me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
     sys.stdout.flush()
     os.execv(sys.executable, [sys.executable, '-I', str(DOCDIFF), '--repo', str(where), '--base', 'google',
                               '--comments', str(where / 'comments.json'), '--docs', str(where / 'docs.json'),
                               '--new-label', f'Markdown of {repo.root.name}, as exported',
-                              '--publish', f'{me} push {{file}} --target {{target}} && {me} export {{file}}', '--serve'])
+                              '--publish', f'{me} push {{file}} --target {{target}} && {me} export {{file}}', '--serve',
+                              *names])
 
 
 def as_markdown(blocks):

@@ -22,9 +22,9 @@ python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> browse
 
 `browse` is the project browser: it exports every mapped doc and hands over to docdiff on the export
 (run it with `run_in_background`, then open the `URL:` it prints in the built-in browser). The page
-lists every Markdown file with a link to its Google Doc, where the two stand (as `status` says) and its
-open comments, and shows each doc that differs as what a push would change, to accept and publish there
-with "⇪ publish accepted".
+lists every Markdown file, its name a link to the doc below, with a link to its Google Doc, where the two
+stand (as `status` says) and its open comments. Below, every mapped doc shows with its comments marked,
+one that differs as what a push would change, to accept and publish there with "⇪ publish accepted".
 
 `export` shows what a push would change in a diff tool of your choice. It writes a git repo
 (`~/.gdocsync/<repo>/<repo>-google/` by default) whose tag `google` holds each Google Doc's text and
