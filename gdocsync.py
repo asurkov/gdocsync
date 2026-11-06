@@ -92,14 +92,16 @@ class Google:
 
     def open_comments(self, doc_id):
         """Unresolved comments: quote (the text they are anchored in, as it read when they were made; the API
-        gives it HTML-escaped), author, date, text, replies, and url, which opens the doc on the comment."""
+        gives it HTML-escaped), author, date, time, text, replies (author, time, text), and url, which opens
+        the doc on the comment."""
         fields = ('comments(id,resolved,quotedFileContent/value,author/displayName,createdTime,content,'
-                  'replies(author/displayName,content))')
+                  'replies(author/displayName,content,createdTime))')
         q = urllib.parse.urlencode({'fields': fields, 'pageSize': 100})
         return [{'quote': html.unescape(c.get('quotedFileContent', {}).get('value', '')), 'author': c['author']['displayName'],
-                 'date': c['createdTime'][:10], 'text': c.get('content', ''),
+                 'date': c['createdTime'][:10], 'time': c['createdTime'], 'text': c.get('content', ''),
                  'url': f'https://docs.google.com/document/d/{doc_id}/edit?disco={c["id"]}',
-                 'replies': [{'author': r['author']['displayName'], 'text': r.get('content', '')} for r in c.get('replies', [])]}
+                 'replies': [{'author': r['author']['displayName'], 'time': r.get('createdTime'), 'text': r.get('content', '')}
+                             for r in c.get('replies', [])]}
                 for c in self.call(f'{DRIVE}/{doc_id}/comments?{q}').get('comments', []) if not c.get('resolved')]
 
 

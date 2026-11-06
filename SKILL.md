@@ -39,8 +39,8 @@ last push or never pushed from here.
 (`~/.gdocsync/<repo>/<repo>-google/` by default) whose tag `google` holds each Google Doc's text and
 whose working tree holds its Markdown's, both as the plain text a push compares, so
 `git -C <dir> diff --word-diff google` or any viewer that takes a base revision shows the push. Beside
-them, `comments.json` holds each doc's open comments: `{file: [{quote, author, date, text, replies,
-fate, url}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
+them, `comments.json` holds each doc's open comments: `{file: [{quote, author, date, time, text,
+replies: [{author, time, text}], fate, url}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
 some of it, and `url` opening the Google Doc on the comment; `docs.json` lists every Markdown file but
 README.md, with its Google Doc and where it stands, `[{file, title, url, local (committed, uncommitted or
 new), unpublished (changes a push would make), edited (paragraphs edited in the Google Doc since the last
