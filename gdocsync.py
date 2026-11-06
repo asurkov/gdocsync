@@ -6,6 +6,7 @@ Usage: gdocsync.py [--repo PATH] status
        gdocsync.py [--repo PATH] create FILE [--title TITLE]
        gdocsync.py [--repo PATH] map FILE DOC_ID
        gdocsync.py [--repo PATH] export [FILE...] [--to DIR]
+       gdocsync.py [--repo PATH] browse
 
 Markdown is the source; the Google Doc follows it. A push edits changed paragraphs word by word, and
 inserts or deletes whole only the blocks added or removed, bottom up, so a comment keeps its anchor
@@ -21,14 +22,19 @@ its Google Doc text with some of the Markdown's changes taken in. Paragraphs tha
 get FILE's styles and links; the others keep the Google Doc's. It stops if the Google Doc or FILE
 changed since the export.
 
+browse exports every mapped doc and opens docdiff on the export: a page that lists every Markdown file
+with its Google Doc and where the two stand, and shows each doc that differs as what a push would
+change, to accept and publish there.
+
 State lives in ~/.gdocsync/<repo name>/: map.json (file -> document id) and snapshots/ (each Google
 Doc's paragraphs as the last push left them). Credentials are gdocs-mcp's, in ~/.gdocs-mcp.
 """
-import argparse, difflib, html, json, os, pathlib, re, string, subprocess, sys, time, urllib.error, urllib.parse
+import argparse, difflib, html, json, os, pathlib, re, shlex, string, subprocess, sys, time, urllib.error, urllib.parse
 import urllib.request
 
 AUTH = pathlib.Path('~/.gdocs-mcp').expanduser()
 STATE = pathlib.Path('~/.gdocsync').expanduser()
+DOCDIFF = pathlib.Path(__file__).resolve().parent.parent / 'docdiff' / 'docdiff.py'
 DOCS = 'https://docs.googleapis.com/v1/documents'
 DRIVE = 'https://www.googleapis.com/drive/v3/files'
 LIST_PRESET = {'ul': 'BULLET_DISC_CIRCLE_SQUARE', 'ol': 'NUMBERED_DECIMAL_ALPHA_ROMAN'}
@@ -691,7 +697,8 @@ def status(g, repo):
 def export(g, repo, names, where):
     """A git repo at `where` for any diff tool: tag `google` holds each Google Doc's text and the working
     tree its Markdown's, both as a push compares them; comments.json beside them holds each doc's open
-    comments, with their quotes as they read there, and what a push does to their anchors. What each side
+    comments, with their quotes as they read there, and what a push does to their anchors; docs.json lists
+    every Markdown file with its Google Doc and where the two stand, as status prints it. What each side
     read is kept in the state too, so push --target can tell that a target made from it is current."""
     where.mkdir(parents=True, exist_ok=True)
     run = lambda *a: subprocess.run(['git', '-C', where, '-c', 'user.name=gdocsync', '-c', 'user.email=gdocsync@localhost', *a],
@@ -699,6 +706,8 @@ def export(g, repo, names, where):
     if not (where / '.git').exists():
         run('init', '-q')
     sides, notes = {}, json.loads((where / 'comments.json').read_text()) if (where / 'comments.json').exists() else {}
+    docs = {d['file']: d for d in json.loads((where / 'docs.json').read_text())
+            if (repo.root / d['file']).exists()} if (where / 'docs.json').exists() else {}
     for name in names:
         gblocks = doc_blocks(g.doc(repo.map[name]))
         mblocks, _ = md_blocks((repo.root / name).read_text())
@@ -707,9 +716,19 @@ def export(g, repo, names, where):
         (repo.state / 'exported').mkdir(exist_ok=True)
         (repo.state / 'exported' / f'{name}.json').write_text(json.dumps(
             {'google': [doc_key(b) for b in gblocks], 'markdown': [md_key(*b) for b in mblocks]}, indent=0, ensure_ascii=False))
-        todo = steps(gblocks, mblocks)
+        todo, cs = steps(gblocks, mblocks), g.open_comments(repo.map[name])
         notes[name] = [{**c, 'quote': norm(c['quote']), 'fate': comment_fate(c['quote'], gblocks, mblocks, todo)}
-                       for c in g.open_comments(repo.map[name]) if c['quote']]
+                       for c in cs if c['quote']]
+        ops, edited = plan(gblocks, mblocks), edited_since_push(repo, name, gblocks, mblocks)
+        docs[name] = {'file': name, 'url': f'https://docs.google.com/document/d/{repo.map[name]}/edit',
+                      'state': 'in step' if not ops else f'{len(ops)} change(s) to push',
+                      'since': 'never pushed by gdocsync' if edited is None else
+                               f'{len(edited)} paragraph(s) edited in the Google Doc' if edited else 'not edited since',
+                      'comments': len(cs)}
+    # Markdown files with no Google Doc are listed too, so the list is the whole repo.
+    for p in repo.root.glob('*.md'):
+        if p.name not in repo.map:
+            docs[p.name] = {'file': p.name, 'url': None, 'state': 'no Google Doc', 'since': '', 'comments': 0}
     for name, (google, _) in sides.items():
         (where / name).write_text(google)
     run('add', '--', *sides)
@@ -718,8 +737,24 @@ def export(g, repo, names, where):
     for name, (_, markdown) in sides.items():
         (where / name).write_text(markdown)
     (where / 'comments.json').write_text(json.dumps(notes, indent=1, ensure_ascii=False))
+    (where / 'docs.json').write_text(json.dumps(sorted(docs.values(), key=lambda d: d['file']), indent=1, ensure_ascii=False))
     print(f'{where}: tag google is the Google Doc, the working tree the Markdown, for {len(sides)} file(s);'
           f' open comments in comments.json')
+
+
+def browse(g, repo):
+    """Exports every mapped doc, then hands over to docdiff on the export, with its docs list on top and
+    publishing through push --target, then export."""
+    if not DOCDIFF.exists():
+        sys.exit(f'{DOCDIFF}: docdiff not found')
+    where = repo.state / f'{repo.root.name}-google'
+    export(g, repo, sorted(n for n in repo.map if (repo.root / n).exists()), where)
+    me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, '-I', str(DOCDIFF), '--repo', str(where), '--base', 'google',
+                              '--comments', str(where / 'comments.json'), '--docs', str(where / 'docs.json'),
+                              '--new-label', f'Markdown of {repo.root.name}, as exported',
+                              '--publish', f'{me} push {{file}} --target {{target}} && {me} export {{file}}', '--serve'])
 
 
 def as_markdown(blocks):
@@ -756,6 +791,7 @@ def main():
     s = sub.add_parser('export')
     s.add_argument('files', nargs='*')
     s.add_argument('--to')
+    sub.add_parser('browse')
     a = p.parse_args()
     repo, g = Repo(a.repo), Google()
     name = getattr(a, 'file', None)
@@ -763,6 +799,8 @@ def main():
         sys.exit(f'{name}: no such file in {repo.root}')
     if a.cmd == 'status':
         status(g, repo)
+    elif a.cmd == 'browse':
+        browse(g, repo)
     elif a.cmd == 'export':
         names = a.files or sorted(n for n in repo.map if (repo.root / n).exists())
         for n in names:

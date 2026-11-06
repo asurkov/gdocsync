@@ -1,7 +1,7 @@
 ---
 name: gdocsync
-description: "Keep Google Docs in step with a repo's Markdown docs: push Markdown changes into the mapped Google Doc, word by word so comments on unchanged text survive, with links between docs pointing to each other's Google Docs and headings. Stops when the Google Doc was edited since the last push. Use when the user invokes /gdocsync, asks to sync, update or publish a Markdown doc to its Google Doc, asks which Google Docs lag their Markdown, or wants a Google Doc made from a Markdown file."
-argument-hint: "[status | push FILE | create FILE | map FILE DOC_ID] [repo path]"
+description: "Keep Google Docs in step with a repo's Markdown docs: push Markdown changes into the mapped Google Doc, word by word so comments on unchanged text survive, with links between docs pointing to each other's Google Docs and headings. Stops when the Google Doc was edited since the last push. Use when the user invokes /gdocsync, asks to sync, update or publish a Markdown doc to its Google Doc, asks which Google Docs lag their Markdown, wants to browse all docs against their Google Docs, or wants a Google Doc made from a Markdown file."
+argument-hint: "[status | browse | push FILE | create FILE | map FILE DOC_ID] [repo path]"
 ---
 
 # gdocsync
@@ -17,7 +17,14 @@ python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> push <file.md> --
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> create <file.md> [--title T]
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> map <file.md> <document id>
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> export [<file.md>…] [--to DIR]
+python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> browse
 ```
+
+`browse` is the project browser: it exports every mapped doc and hands over to docdiff on the export
+(run it with `run_in_background`, then open the `URL:` it prints in the built-in browser). The page
+lists every Markdown file with a link to its Google Doc, where the two stand (as `status` says) and its
+open comments, and shows each doc that differs as what a push would change, to accept and publish there
+with "⇪ publish accepted".
 
 `export` shows what a push would change in a diff tool of your choice. It writes a git repo
 (`~/.gdocsync/<repo>/<repo>-google/` by default) whose tag `google` holds each Google Doc's text and
@@ -25,7 +32,8 @@ whose working tree holds its Markdown's, both as the plain text a push compares,
 `git -C <dir> diff --word-diff google` or any viewer that takes a base revision shows the push. Beside
 them, `comments.json` holds each doc's open comments: `{file: [{quote, author, date, text, replies,
 fate, url}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
-some of it, and `url` opening the Google Doc on the comment.
+some of it, and `url` opening the Google Doc on the comment; `docs.json` lists every Markdown file with
+its Google Doc and where the two stand, `[{file, url, state, since, comments}]`.
 
 `push --target T` publishes only some of the changes: T is a Markdown file made from the last export,
 the Google Doc's text with the changes to publish taken in (a diff tool's accepted copy, say). The push
