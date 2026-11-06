@@ -817,7 +817,7 @@ def browse(g, repo):
         for d in docs:
             d.pop('local_diff', None)
             if url and d['local'] != 'committed':
-                d['local_diff'] = f'{url}#file={urllib.parse.quote(d["file"])}'
+                d['local_diff'] = f'{url}#file={urllib.parse.quote(d["file"])}&view=diff'
         (where / 'docs.json').write_text(json.dumps(docs, indent=1, ensure_ascii=False))
     me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
     sys.stdout.flush()
