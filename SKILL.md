@@ -24,8 +24,8 @@ python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> export [<file.md>
 whose working tree holds its Markdown's, both as the plain text a push compares, so
 `git -C <dir> diff --word-diff google` or any viewer that takes a base revision shows the push. Beside
 them, `comments.json` holds each doc's open comments: `{file: [{quote, author, date, text, replies,
-fate}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
-some of it.
+fate, url}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
+some of it, and `url` opening the Google Doc on the comment.
 
 `push --target T` publishes only some of the changes: T is a Markdown file made from the last export,
 the Google Doc's text with the changes to publish taken in (a diff tool's accepted copy, say). The push
