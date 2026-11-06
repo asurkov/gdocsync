@@ -708,6 +708,7 @@ def export(g, repo, names, where):
     sides, notes = {}, json.loads((where / 'comments.json').read_text()) if (where / 'comments.json').exists() else {}
     docs = {d['file']: d for d in json.loads((where / 'docs.json').read_text())
             if (repo.root / d['file']).exists()} if (where / 'docs.json').exists() else {}
+    order, titles = readme_order(repo)
     for name in names:
         gblocks = doc_blocks(g.doc(repo.map[name]))
         mblocks, _ = md_blocks((repo.root / name).read_text())
@@ -720,15 +721,18 @@ def export(g, repo, names, where):
         notes[name] = [{**c, 'quote': norm(c['quote']), 'fate': comment_fate(c['quote'], gblocks, mblocks, todo)}
                        for c in cs if c['quote']]
         ops, edited = plan(gblocks, mblocks), edited_since_push(repo, name, gblocks, mblocks)
-        docs[name] = {'file': name, 'url': f'https://docs.google.com/document/d/{repo.map[name]}/edit',
+        docs[name] = {'file': name, 'title': titles.get(name) or first_heading(repo.root / name) or name,
+                      'url': f'https://docs.google.com/document/d/{repo.map[name]}/edit',
                       'state': 'in step' if not ops else f'{len(ops)} change(s) to push',
                       'since': 'never pushed by gdocsync' if edited is None else
                                f'{len(edited)} paragraph(s) edited in the Google Doc' if edited else 'not edited since',
                       'comments': len(cs)}
-    # Markdown files with no Google Doc are listed too, so the list is the whole repo.
+    # Markdown files with no Google Doc are listed too, so the list is the whole repo, but for README.md.
     for p in repo.root.glob('*.md'):
-        if p.name not in repo.map:
-            docs[p.name] = {'file': p.name, 'url': None, 'state': 'no Google Doc', 'since': '', 'comments': 0}
+        if p.name not in repo.map and p.name != 'README.md':
+            docs[p.name] = {'file': p.name, 'title': titles.get(p.name) or first_heading(p) or p.name, 'url': None,
+                            'state': 'no Google Doc', 'since': '', 'comments': 0}
+    docs.pop('README.md', None)
     for name, (google, _) in sides.items():
         (where / name).write_text(google)
     run('add', '--', *sides)
@@ -737,9 +741,25 @@ def export(g, repo, names, where):
     for name, (_, markdown) in sides.items():
         (where / name).write_text(markdown)
     (where / 'comments.json').write_text(json.dumps(notes, indent=1, ensure_ascii=False))
-    (where / 'docs.json').write_text(json.dumps(sorted(docs.values(), key=lambda d: d['file']), indent=1, ensure_ascii=False))
+    (where / 'docs.json').write_text(json.dumps(sorted(docs.values(), key=lambda d: (order.get(d['file'], len(order)), d['file'])),
+                                                indent=1, ensure_ascii=False))
     print(f'{where}: tag google is the Google Doc, the working tree the Markdown, for {len(sides)} file(s);'
           f' open comments in comments.json')
+
+
+def readme_order(repo):
+    """The docs README.md links to, in its order ({file: place}), and its words for each ({file: words}):
+    the repo's own list of its documents."""
+    f, order, titles = repo.root / 'README.md', {}, {}
+    for words, path in re.findall(r'\[([^\]]+)\]\((?:\./)?([^)#\s/]+\.md)[^)]*\)', f.read_text() if f.exists() else ''):
+        if path not in order:
+            order[path], titles[path] = len(order), words
+    return order, titles
+
+
+def first_heading(path):
+    m = re.search(r'^# (.+)$', path.read_text(), re.M)
+    return m.group(1).strip() if m else None
 
 
 def browse(g, repo):
@@ -748,7 +768,8 @@ def browse(g, repo):
     if not DOCDIFF.exists():
         sys.exit(f'{DOCDIFF}: docdiff not found')
     where = repo.state / f'{repo.root.name}-google'
-    names = sorted(n for n in repo.map if (repo.root / n).exists())
+    order, _ = readme_order(repo)
+    names = sorted((n for n in repo.map if (repo.root / n).exists()), key=lambda n: (order.get(n, len(order)), n))
     export(g, repo, names, where)
     me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
     sys.stdout.flush()

@@ -32,8 +32,10 @@ whose working tree holds its Markdown's, both as the plain text a push compares,
 `git -C <dir> diff --word-diff google` or any viewer that takes a base revision shows the push. Beside
 them, `comments.json` holds each doc's open comments: `{file: [{quote, author, date, text, replies,
 fate, url}]}`, `fate` being `goes` when a push deletes all of the comment's anchor, `edited` when it changes
-some of it, and `url` opening the Google Doc on the comment; `docs.json` lists every Markdown file with
-its Google Doc and where the two stand, `[{file, url, state, since, comments}]`.
+some of it, and `url` opening the Google Doc on the comment; `docs.json` lists every Markdown file but
+README.md, with its Google Doc and where the two stand, `[{file, title, url, state, since, comments}]`, in
+the order README.md links them and titled with its words for each (others after, titled by their first
+heading).
 
 `push --target T` publishes only some of the changes: T is a Markdown file made from the last export,
 the Google Doc's text with the changes to publish taken in (a diff tool's accepted copy, say). The push
