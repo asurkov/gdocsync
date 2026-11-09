@@ -538,7 +538,7 @@ def edited_since_push(repo, name, gblocks, mblocks):
 
 def push(g, repo, name, dry_run=False, force=False, target=None):
     doc_id = repo.map.get(name) or sys.exit(f'{name} has no Google Doc: create or map it first')
-    md = (repo.root / name).read_text()
+    md = committed(repo, name)
     mblocks, refs = md_blocks(md)
     doc = g.doc(doc_id)
     gblocks = doc_blocks(doc)
@@ -676,6 +676,13 @@ def restyle(g, repo, name, mblocks, refs, styled=None):
     g.batch(doc_id, reqs, doc['revisionId'])
 
 
+def committed(repo, name):
+    """The Markdown as last committed, which the Google Doc follows: an edit reaches it once committed. A
+    file not committed yet reads as on disk."""
+    r = subprocess.run(['git', '-C', repo.root, 'show', f'HEAD:{name}'], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else (repo.root / name).read_text()
+
+
 def local_state(repo, name):
     """The Markdown file against git: committed, uncommitted (edited since the last commit) or new."""
     s = subprocess.run(['git', '-C', repo.root, 'status', '--porcelain', '--', name], capture_output=True, text=True).stdout
@@ -692,9 +699,9 @@ def standing(repo, name, gblocks=None, mblocks=None):
         return {'local': local, 'unpublished': None, 'edited': None, 'stand': words + '; no Google Doc'}
     ops, edited = plan(gblocks, mblocks), edited_since_push(repo, name, gblocks, mblocks)
     if not ops:
-        words += ', and the Google Doc matches' if local == 'committed' else ', already in the Google Doc'
+        words += ', and the Google Doc matches' if local == 'committed' else '; the Google Doc matches the last commit'
     else:
-        words += f'; {len(ops)} change(s) not in the Google Doc yet'
+        words += f'; {len(ops)} committed change(s) not in the Google Doc yet'
     if edited is None:
         words += '; never pushed from here'
     elif edited:
@@ -709,7 +716,7 @@ def status(g, repo):
         if not (repo.root / name).exists():
             print(f'{name}: mapped, but the file is gone')
             continue
-        mblocks, _ = md_blocks((repo.root / name).read_text())
+        mblocks, _ = md_blocks(committed(repo, name))
         d = standing(repo, name, doc_blocks(g.doc(doc_id)), mblocks)
         print(f'{name}: {d["stand"]}; {len(g.open_comments(doc_id))} open comment(s)')
     unmapped = sorted(p.name for p in repo.root.glob('*.md') if p.name not in repo.map and p.name != 'README.md')
@@ -734,7 +741,7 @@ def export(g, repo, names, where):
     order, titles = readme_order(repo)
     for name in names:
         gblocks = doc_blocks(g.doc(repo.map[name]))
-        mblocks, _ = md_blocks((repo.root / name).read_text())
+        mblocks, _ = md_blocks(committed(repo, name))
         sides[name] = (as_markdown([(doc_key(b)[0], doc_key(b)[1], b.get('table') and table_rows(b['table'])) for b in gblocks]),
                        as_markdown([(*md_key(k, b), k == 'table' and [[plain(c) for c in row] for row in b]) for k, b in mblocks]))
         (repo.state / 'exported').mkdir(exist_ok=True)
@@ -792,7 +799,8 @@ def local_page(repo, where, refresh):
     log = repo.state / 'local-docdiff.log'
     with open(log, 'w') as out:
         p = subprocess.Popen([sys.executable, '-I', str(DOCDIFF), '--repo', str(repo.root), '--base', 'HEAD',
-                              '--comments', str(where / 'comments.json'), '--refresh', refresh, '--serve'],
+                              '--comments', str(where / 'comments.json'), '--refresh', refresh,
+                              '--commit', '--after-commit', refresh, '--serve'],
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(600):
         m = re.search(r'^URL: (\S+)', log.read_text(), re.M)

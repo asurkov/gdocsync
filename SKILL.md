@@ -6,8 +6,15 @@ argument-hint: "[status | browse | push FILE | create FILE | map FILE DOC_ID] [r
 
 # gdocsync
 
-Markdown is the source; each mapped Google Doc follows it. `gdocsync.py` talks to the Google Docs and
-Drive APIs directly with gdocs-mcp's sign-in (`~/.gdocs-mcp`).
+The committed Markdown is the source; each mapped Google Doc follows it. Push, export and status read
+each file as of `HEAD` (a file not committed yet, as on disk), so an edit reaches its Google Doc once it
+is committed, and uncommitted edits never leak into it; `status` says "Uncommitted edits; the Google Doc
+matches the last commit" for that case. `gdocsync.py` talks to the Google Docs and Drive APIs directly
+with gdocs-mcp's sign-in (`~/.gdocs-mcp`).
+
+The review flow in `browse`: review an edit once on the local edits page and **⇪ commit accepted**
+there (it commits each file whose changes are all accepted, as it reads on disk, then exports again);
+the Google Docs page then shows only committed changes not yet published, to publish.
 
 ```bash
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> status
