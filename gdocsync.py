@@ -804,7 +804,8 @@ def local_page(repo):
 
 def browse(g, repo):
     """Exports every mapped doc, then hands over to docdiff on the export, with its docs list on top,
-    every mapped doc named so one in step shows too, and publishing through push --target, then export.
+    every mapped doc named so one in step shows too, publishing through push --target, then export, and
+    ↻ Google Docs through export.
     With uncommitted edits, a second docdiff page shows them against the last commit, and each doc that
     has some links to it there."""
     if not DOCDIFF.exists():
@@ -826,8 +827,8 @@ def browse(g, repo):
     os.execv(sys.executable, [sys.executable, '-I', str(DOCDIFF), '--repo', str(where), '--base', 'google',
                               '--comments', str(where / 'comments.json'), '--docs', str(where / 'docs.json'),
                               '--new-label', f'Markdown of {repo.root.name}, as exported',
-                              '--publish', f'{me} push {{file}} --target {{target}} && {me} export {{file}}', '--serve',
-                              *names])
+                              '--publish', f'{me} push {{file}} --target {{target}} && {me} export {{file}}',
+                              '--refresh', f'{me} export', '--serve', *names])
 
 
 def as_markdown(blocks):

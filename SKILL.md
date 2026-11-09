@@ -29,7 +29,8 @@ Google Doc"), with a link to each comparison that has something: "uncommitted ed
 docdiff page of the repo's uncommitted edits (against `HEAD`, started in the background) at that doc,
 "what a push would change ↓" the doc below. Below, every mapped doc shows with its comments marked, one
 that differs as what a push would change, to accept and publish there with "⇪ publish accepted". The
-local page's link changes when its server restarts: run `browse` again.
+Review panel's ↻ Google Docs exports again in the background, for new comments and edits made in the
+Google Docs, without leaving the page.
 
 `status` says the same sentence per doc: whether the Markdown is committed, whether the Google Doc
 matches it (or how many changes a push would make), and whether the Google Doc was edited since the
