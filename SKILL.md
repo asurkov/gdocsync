@@ -14,7 +14,11 @@ with gdocs-mcp's sign-in (`~/.gdocs-mcp`).
 
 The review flow in `browse`: review an edit once on the local edits page and **⇪ commit accepted**
 there (it commits each file whose changes are all accepted, as it reads on disk, then exports again);
-the Google Docs page then shows only committed changes not yet published, to publish.
+the Google Docs page then shows only committed changes not yet published, to publish. Edit sessions
+working in parallel, each in a git worktree of its own, are reviewed apart: `browse` gives every other
+worktree with uncommitted Markdown edits its own edits page, listed above the docs on the Google Docs
+page (session, branch, edited docs, review ↗), whose commit accepted commits on the session's branch and
+lands the commit on the repo's own checkout (`--commit-into`).
 
 ```bash
 python3 -I ~/.claude/skills/gdocsync/gdocsync.py --repo <repo> status
@@ -34,7 +38,7 @@ stands in one sentence (as `status` says it) and its open comments. The sentence
 versions of a doc: committed, uncommitted edits, and the Google Doc ("Uncommitted edits, already in the
 Google Doc"), with a link to each comparison that has something: "uncommitted edits ↗" opens a second
 docdiff page of the repo's uncommitted edits (against `HEAD`, started in the background, with the Google
-Docs' comments on them and ↻ Google Docs) at that doc,
+Docs' comments on them, ↻ Google Docs and commit accepted) at that doc,
 "what a push would change ↓" the doc below. Below, every mapped doc shows with its comments marked, one
 that differs as what a push would change, to accept and publish there with "⇪ publish accepted". The
 Review panel's ↻ Google Docs exports again in the background, for new comments and edits made in the

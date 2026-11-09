@@ -29,7 +29,7 @@ change, to accept and publish there.
 State lives in ~/.gdocsync/<repo name>/: map.json (file -> document id) and snapshots/ (each Google
 Doc's paragraphs as the last push left them). Credentials are gdocs-mcp's, in ~/.gdocs-mcp.
 """
-import argparse, difflib, html, json, os, pathlib, re, shlex, string, subprocess, sys, time, urllib.error, urllib.parse
+import argparse, difflib, html, json, os, pathlib, re, shlex, string, subprocess, sys, tempfile, time, urllib.error, urllib.parse
 import urllib.request
 
 AUTH = pathlib.Path('~/.gdocs-mcp').expanduser()
@@ -792,15 +792,18 @@ def first_heading(path):
     return m.group(1).strip() if m else None
 
 
-def local_page(repo, where, refresh):
-    """The URL of docdiff's page of the repo's uncommitted edits, with the Google Docs' comments on them
-    (where: the export) and ↻ Google Docs (refresh), started in the background (or already running), or
-    None if it does not come up within a minute."""
-    log = repo.state / 'local-docdiff.log'
+def edits_page(repo, path, where, refresh, log, into=None):
+    """The URL of docdiff's page of a checkout's uncommitted edits (path: the repo's own, or an edit
+    session's worktree), with the Google Docs' comments on them (where: the export), ↻ Google Docs and
+    commit accepted, which exports again after (refresh); a session's commit also lands on the repo's own
+    checkout (into). Started in the background (or already running); None if it does not come up within
+    a minute."""
     with open(log, 'w') as out:
-        p = subprocess.Popen([sys.executable, '-I', str(DOCDIFF), '--repo', str(repo.root), '--base', 'HEAD',
+        p = subprocess.Popen([sys.executable, '-I', str(DOCDIFF), '--repo', str(path), '--base', 'HEAD',
                               '--comments', str(where / 'comments.json'), '--refresh', refresh,
-                              '--commit', '--after-commit', refresh, '--serve'],
+                              '--commit', '--after-commit', refresh, '--serve',
+                              # A session's page keeps its accepts apart from the repo's own page.
+                              *(['--commit-into', str(into), '--out', str(pathlib.Path(tempfile.gettempdir()) / f'docdiff-{repo.root.name}-{path.name}')] if into else [])],
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(600):
         m = re.search(r'^URL: (\S+)', log.read_text(), re.M)
@@ -812,12 +815,33 @@ def local_page(repo, where, refresh):
     return None
 
 
+def sessions(repo):
+    """Edit sessions working apart: the repo's other worktrees with Markdown edited and not committed,
+    [{name, path, branch, docs}], docs the names of those files."""
+    found, cur = [], {}
+    listing = subprocess.run(['git', '-C', repo.root, 'worktree', 'list', '--porcelain'], capture_output=True, text=True).stdout
+    for line in listing.splitlines() + ['']:
+        if line:
+            k, _, v = line.partition(' ')
+            cur[k] = v
+            continue
+        path = pathlib.Path(cur.get('worktree', ''))
+        if cur.get('worktree') and path.resolve() != repo.root.resolve():
+            status = subprocess.run(['git', '-C', path, 'status', '--porcelain', '-uall'], capture_output=True, text=True).stdout
+            docs = [f for f in (l[3:].split(' -> ')[-1] for l in status.splitlines()) if f.endswith('.md')]
+            if docs:
+                found.append({'name': path.name, 'path': str(path), 'branch': cur.get('branch', '').removeprefix('refs/heads/') or None, 'docs': docs})
+        cur = {}
+    return found
+
+
 def browse(g, repo):
     """Exports every mapped doc, then hands over to docdiff on the export, with its docs list on top,
     every mapped doc named so one in step shows too, publishing through push --target, then export, and
     ↻ Google Docs through export.
     With uncommitted edits, a second docdiff page shows them against the last commit, with the Google Docs'
-    comments on them, and each doc that has some links to it there."""
+    comments on them, and each doc that has some links to it there; each edit session in a worktree of its
+    own gets such a page too, listed above the docs, whose commits land on the repo's own checkout."""
     if not DOCDIFF.exists():
         sys.exit(f'{DOCDIFF}: docdiff not found')
     where = repo.state / f'{repo.root.name}-google'
@@ -827,14 +851,20 @@ def browse(g, repo):
     me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
     docs = json.loads((where / 'docs.json').read_text())
     if any(d['local'] != 'committed' for d in docs):
-        url = local_page(repo, where, f'{me} export')
+        url = edits_page(repo, repo.root, where, f'{me} export', repo.state / 'local-docdiff.log')
         for d in docs:
             d.pop('local_diff', None)
             if url and d['local'] != 'committed':
                 d['local_diff'] = f'{url}#file={urllib.parse.quote(d["file"])}&view=diff'
         (where / 'docs.json').write_text(json.dumps(docs, indent=1, ensure_ascii=False))
+    # Each edit session in a worktree of its own gets its page, listed on the Google page.
+    found = sessions(repo)
+    for x in found:
+        x['url'] = edits_page(repo, x['path'], where, f'{me} export', repo.state / f'session-{x["name"]}.log', into=repo.root)
+    (where / 'sessions.json').write_text(json.dumps(found, indent=1, ensure_ascii=False))
     sys.stdout.flush()
     os.execv(sys.executable, [sys.executable, '-I', str(DOCDIFF), '--repo', str(where), '--base', 'google',
+                              '--sessions', str(where / 'sessions.json'),
                               '--comments', str(where / 'comments.json'), '--docs', str(where / 'docs.json'),
                               '--new-label', f'Markdown of {repo.root.name}, as exported',
                               '--publish', f'{me} push {{file}} --target {{target}} && {me} export {{file}}',
