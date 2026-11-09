@@ -26,7 +26,8 @@ lists every Markdown file, its name a link to the doc below, with a link to its 
 stands in one sentence (as `status` says it) and its open comments. The sentence covers the three
 versions of a doc: committed, uncommitted edits, and the Google Doc ("Uncommitted edits, already in the
 Google Doc"), with a link to each comparison that has something: "uncommitted edits ↗" opens a second
-docdiff page of the repo's uncommitted edits (against `HEAD`, started in the background) at that doc,
+docdiff page of the repo's uncommitted edits (against `HEAD`, started in the background, with the Google
+Docs' comments on them and ↻ Google Docs) at that doc,
 "what a push would change ↓" the doc below. Below, every mapped doc shows with its comments marked, one
 that differs as what a push would change, to accept and publish there with "⇪ publish accepted". The
 Review panel's ↻ Google Docs exports again in the background, for new comments and edits made in the

@@ -785,12 +785,14 @@ def first_heading(path):
     return m.group(1).strip() if m else None
 
 
-def local_page(repo):
-    """The URL of docdiff's page of the repo's uncommitted edits, started in the background (or already
-    running), or None if it does not come up within a minute."""
+def local_page(repo, where, refresh):
+    """The URL of docdiff's page of the repo's uncommitted edits, with the Google Docs' comments on them
+    (where: the export) and ↻ Google Docs (refresh), started in the background (or already running), or
+    None if it does not come up within a minute."""
     log = repo.state / 'local-docdiff.log'
     with open(log, 'w') as out:
-        p = subprocess.Popen([sys.executable, '-I', str(DOCDIFF), '--repo', str(repo.root), '--base', 'HEAD', '--serve'],
+        p = subprocess.Popen([sys.executable, '-I', str(DOCDIFF), '--repo', str(repo.root), '--base', 'HEAD',
+                              '--comments', str(where / 'comments.json'), '--refresh', refresh, '--serve'],
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(600):
         m = re.search(r'^URL: (\S+)', log.read_text(), re.M)
@@ -806,23 +808,23 @@ def browse(g, repo):
     """Exports every mapped doc, then hands over to docdiff on the export, with its docs list on top,
     every mapped doc named so one in step shows too, publishing through push --target, then export, and
     ↻ Google Docs through export.
-    With uncommitted edits, a second docdiff page shows them against the last commit, and each doc that
-    has some links to it there."""
+    With uncommitted edits, a second docdiff page shows them against the last commit, with the Google Docs'
+    comments on them, and each doc that has some links to it there."""
     if not DOCDIFF.exists():
         sys.exit(f'{DOCDIFF}: docdiff not found')
     where = repo.state / f'{repo.root.name}-google'
     order, _ = readme_order(repo)
     names = sorted((n for n in repo.map if (repo.root / n).exists()), key=lambda n: (order.get(n, len(order)), n))
     export(g, repo, names, where)
+    me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
     docs = json.loads((where / 'docs.json').read_text())
     if any(d['local'] != 'committed' for d in docs):
-        url = local_page(repo)
+        url = local_page(repo, where, f'{me} export')
         for d in docs:
             d.pop('local_diff', None)
             if url and d['local'] != 'committed':
                 d['local_diff'] = f'{url}#file={urllib.parse.quote(d["file"])}&view=diff'
         (where / 'docs.json').write_text(json.dumps(docs, indent=1, ensure_ascii=False))
-    me = ' '.join(map(shlex.quote, [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--repo', str(repo.root)]))
     sys.stdout.flush()
     os.execv(sys.executable, [sys.executable, '-I', str(DOCDIFF), '--repo', str(where), '--base', 'google',
                               '--comments', str(where / 'comments.json'), '--docs', str(where / 'docs.json'),
