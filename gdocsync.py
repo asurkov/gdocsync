@@ -29,7 +29,7 @@ change, to accept and publish there.
 State lives in ~/.gdocsync/<repo name>/: map.json (file -> document id) and snapshots/ (each Google
 Doc's paragraphs as the last push left them). Credentials are gdocs-mcp's, in ~/.gdocs-mcp.
 """
-import argparse, difflib, html, json, os, pathlib, re, shlex, string, subprocess, sys, tempfile, time, urllib.error, urllib.parse
+import argparse, difflib, html, json, os, pathlib, re, shlex, string, subprocess, sys, time, urllib.error, urllib.parse
 import urllib.request
 
 AUTH = pathlib.Path('~/.gdocs-mcp').expanduser()
@@ -802,8 +802,9 @@ def edits_page(repo, path, where, refresh, log, into=None):
         p = subprocess.Popen([sys.executable, '-I', str(DOCDIFF), '--repo', str(path), '--base', 'HEAD',
                               '--comments', str(where / 'comments.json'), '--refresh', refresh,
                               '--commit', '--after-commit', refresh, '--serve',
-                              # A session's page keeps its accepts apart from the repo's own page.
-                              *(['--commit-into', str(into), '--out', str(pathlib.Path(tempfile.gettempdir()) / f'docdiff-{repo.root.name}-{path.name}')] if into else [])],
+                              # A session's page keeps its accepts apart from the repo's own page, as a review of its
+                              # own in ~/.docdiff.
+                              *(['--commit-into', str(into), '--name', re.sub(r'[^A-Za-z0-9_.-]+', '-', f'{repo.root.name}-{path.name}')] if into else [])],
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(600):
         m = re.search(r'^URL: (\S+)', log.read_text(), re.M)
